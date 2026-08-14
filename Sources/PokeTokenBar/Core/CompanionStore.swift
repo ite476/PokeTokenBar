@@ -69,8 +69,7 @@ final class CompanionStore {
         if !override.isEmpty {
             dir = URL(fileURLWithPath: override, isDirectory: true)
         } else {
-            dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-                .appendingPathComponent("PokeTokenBar")
+            dir = AppPaths.applicationDirectory
         }
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("companion-state.json")

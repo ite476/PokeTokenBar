@@ -12,9 +12,8 @@ actor SpriteStore {
     // 동기 재읽기 24회). 정적 PNG 는 종당 0.5~1KB 라 64 로 올려도 메모리 비용이 무의미하다.
     private let memLimit = 64
     private let dir: URL = {
-        let d = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("PokeTokenBar/sprites")
-        try? FileManager.default.createDirectory(at: d, withIntermediateDirectories: true)
+        let d = AppPaths.applicationDirectory.appendingPathComponent("sprites", isDirectory: true)
+        AppPaths.ensureDirectory(d)
         return d
     }()
 
@@ -92,10 +91,7 @@ actor SpriteStore {
 
 @MainActor
 enum SpriteLoader {
-    static let cacheDir: URL = {
-        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("PokeTokenBar/sprites")
-    }()
+    static let cacheDir: URL = AppPaths.applicationDirectory.appendingPathComponent("sprites", isDirectory: true)
 
     /// 디스크 캐시에 이미 있으면 동기 반환(네트워크 없음). 없으면 nil.
     /// shiny 캐시 미스는 일반 캐시로 폴백 — 오프라인에서 live mon 이 알 글리프로 보이는 것 방지.

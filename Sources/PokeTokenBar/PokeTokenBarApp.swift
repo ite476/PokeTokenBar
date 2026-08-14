@@ -309,9 +309,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSPopoverDelegate {
     /// 새 이름으로 옮겨 companion 진행상황·스프라이트 캐시·스냅샷을 보존한다(신규 폴더 없을 때만).
     private static func migrateLegacyStorageIfNeeded() {
         let fm = FileManager.default
-        let base = fm.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let base = AppPaths.applicationSupportRoot
         let old = base.appendingPathComponent("TokenMac")
-        let new = base.appendingPathComponent("PokeTokenBar")
+        let new = AppPaths.applicationDirectory
         guard fm.fileExists(atPath: old.path), !fm.fileExists(atPath: new.path) else { return }
         try? fm.moveItem(at: old, to: new)
     }

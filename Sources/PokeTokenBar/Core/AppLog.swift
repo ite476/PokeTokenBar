@@ -1,14 +1,13 @@
 import Foundation
 
-/// ~/Library/Logs/PokeTokenBar.log 단순 append 로거 (디버깅/장애 추적용)
+/// AppPaths.logDirectory 아래에 단순 append 하는 로거 (디버깅/장애 추적용).
 enum AppLog {
     /// 로그 파일 경로 — 설정의 "로그 파일 보기"(Finder 표시)에서 사용.
     static var logFileURL: URL { url }
 
     private static let url: URL = {
-        let dir = FileManager.default.urls(for: .libraryDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Logs")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = AppPaths.logDirectory
+        AppPaths.ensureDirectory(dir)
         return dir.appendingPathComponent("PokeTokenBar.log")
     }()
 
