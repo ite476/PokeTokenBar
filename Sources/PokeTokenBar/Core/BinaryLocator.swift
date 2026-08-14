@@ -6,6 +6,12 @@ import Foundation
 /// 전략: 수동 지정(UserDefaults "<binary>Path") → 정적 경로(빠름) → 로그인+인터랙티브 셸 PATH 해석.
 /// 바이너리별로 1회 캐시(셸 호출 비용 회피).
 enum BinaryLocator {
+    #if os(Windows)
+    private static let pathSeparator: Character = ";"
+    #else
+    private static let pathSeparator: Character = ":"
+    #endif
+
     private static let lock = NSLock()
     private struct Cached { let path: String?; let at: Date }
     private nonisolated(unsafe) static var cache: [String: Cached] = [:]
@@ -39,11 +45,11 @@ enum BinaryLocator {
                                      base: [String: String] = ProcessInfo.processInfo.environment) -> [String: String] {
         var paths = [URL(fileURLWithPath: binaryPath).deletingLastPathComponent().path]
         paths.append(contentsOf: commonToolDirectories())
-        for entry in (base["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: ":") {
+        for entry in (base["PATH"] ?? "/usr/bin:/bin:/usr/sbin:/sbin").split(separator: pathSeparator) {
             paths.append(String(entry))
         }
         var seen = Set<String>()
-        let merged = paths.filter { seen.insert($0).inserted }.joined(separator: ":")
+        let merged = paths.filter { seen.insert($0).inserted }.joined(separator: String(pathSeparator))
         var env = base
         env["PATH"] = merged
         return env
@@ -60,6 +66,20 @@ enum BinaryLocator {
     /// 새 버전매니저 지원 시 여기 한 곳만 추가하면 두 경로 모두에 반영된다.
     static func commonToolDirectories() -> [String] {
         let home = NSHomeDirectory()
+        #if os(Windows)
+        let homeURL = URL(fileURLWithPath: home)
+        return [
+            "/opt/homebrew/bin",
+            "/usr/local/bin",
+            homeURL.appendingPathComponent(".local/share/mise/shims").path,
+            homeURL.appendingPathComponent(".asdf/shims").path,
+            homeURL.appendingPathComponent(".volta/bin").path,
+            homeURL.appendingPathComponent(".bun/bin").path,
+            homeURL.appendingPathComponent(".npm-global/bin").path,
+            homeURL.appendingPathComponent(".local/bin").path,
+            "/usr/bin",
+        ]
+        #else
         return [
             "/opt/homebrew/bin",                 // Homebrew (Apple Silicon)
             "/usr/local/bin",                    // Homebrew (Intel) / npm prefix
@@ -71,6 +91,7 @@ enum BinaryLocator {
             "\(home)/.local/bin",
             "/usr/bin",
         ]
+        #endif
     }
 
     /// 버전매니저 공통 shim/bin 경로 + 주어진 정적 경로. (절대경로 우선 탐색용)

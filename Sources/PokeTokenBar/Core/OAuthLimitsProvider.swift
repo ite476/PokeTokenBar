@@ -1,5 +1,10 @@
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
+#if os(macOS)
 import Security
+#endif
 
 enum LimitsError: Error {
     case keychainAccessDisabled
@@ -116,6 +121,7 @@ private actor OAuthAccessTokenCache {
     /// '아직 항상 허용 전'(interactionNotAllowed)은 정상 흐름이라 조용히 nil. 그 외(형식 오류·접근 불가)는
     /// 진단을 위해 로그를 남기고 nil — 자동 경로가 왜 토큰을 못 구했는지 추적 가능하게.
     private nonisolated static func readClaudeKeychainSilently() -> OAuthCredentialData.Credential? {
+#if os(macOS)
         do {
             return try readClaudeKeychain(allowKeychainPrompt: false)
         } catch LimitsError.keychainInteractionNotAllowed {
@@ -124,6 +130,9 @@ private actor OAuthAccessTokenCache {
             AppLog.write("silent claude keychain read failed: \(error)")
             return nil
         }
+#else
+        return nil
+#endif
     }
 
     /// 마지막으로 사용한 자격증명의 플랜 정보. accessToken() 이 모든 경로에서 cachedCredential 을
@@ -173,6 +182,7 @@ private actor OAuthAccessTokenCache {
     private nonisolated static func readClaudeKeychain(
         allowKeychainPrompt: Bool) throws -> OAuthCredentialData.Credential
     {
+#if os(macOS)
         if KeychainAccessGate.isDisabled {
             throw LimitsError.keychainAccessDisabled
         }
@@ -201,6 +211,9 @@ private actor OAuthAccessTokenCache {
                 : LimitsError.credentialFormat
         }
         return credential
+#else
+        throw LimitsError.keychainInteractionNotAllowed
+#endif
     }
 }
 

@@ -74,7 +74,15 @@ enum LocalUsageReader {
             for part in raw.split(separator: ",") {
                 let path = part.trimmingCharacters(in: .whitespaces)
                 guard !path.isEmpty else { continue }
-                roots.append(URL(fileURLWithPath: NSString(string: path).expandingTildeInPath)
+                let expandedPath: String
+                if path == "~" {
+                    expandedPath = home.path
+                } else if path.hasPrefix("~/") || path.hasPrefix("~\\") {
+                    expandedPath = home.appendingPathComponent(String(path.dropFirst(2))).path
+                } else {
+                    expandedPath = path
+                }
+                roots.append(URL(fileURLWithPath: expandedPath)
                     .appendingPathComponent("projects"))
             }
         }
@@ -148,6 +156,9 @@ enum LocalUsageReader {
     /// 8·9 로 올려도 방문 수는 그대로였다(100 고정) — 폭은 깊이가 아니라 `node_modules` 류 가지치기가
     /// 잡고 있다. 즉 7 이 "놓치지 않는 최소값"이면서 비용이 늘지 않는 지점이다.
     static func embeddedClaudeProjectRoots(under base: URL, maxDepth: Int = 7) -> [URL] {
+        #if os(Windows)
+        return embeddedClaudeProjectRootsWindows(under: base, maxDepth: maxDepth)
+        #else
         let fm = FileManager.default
         var isDir: ObjCBool = false
         guard fm.fileExists(atPath: base.path, isDirectory: &isDir), isDir.boolValue else { return [] }
@@ -155,6 +166,7 @@ enum LocalUsageReader {
                                      options: [.skipsPackageDescendants]) else { return [] }
         var out: [URL] = []
         var prunedByDepth = false
+        let baseDepth = base.standardizedFileURL.pathComponents.count
         for case let url as URL in en {
             let name = url.lastPathComponent
             if name == "projects", url.deletingLastPathComponent().lastPathComponent == ".claude",
@@ -165,7 +177,11 @@ enum LocalUsageReader {
             }
             // 이 항목 자체는 위에서 검사한 뒤에 가지치기한다. `> maxDepth` 로 자르면 한 단계 더
             // 내려간 뒤에야 멈춰 실제 탐색 폭이 의도보다 넓어진다.
-            if en.level >= maxDepth {
+            // FileManager enumerator levels are not consistent across Darwin and Windows
+            // (Windows counts the starting directory differently). Compare normalized URL
+            // components instead so the documented layout depth remains portable.
+            let relativeDepth = max(0, url.standardizedFileURL.pathComponents.count - baseDepth)
+            if relativeDepth >= maxDepth {
                 prunedByDepth = true
                 en.skipDescendants()
             } else if rootScanSkippedDirectories.contains(name) {
@@ -178,7 +194,50 @@ enum LocalUsageReader {
             AppLog.write("claude desktop scan: depth \(maxDepth) reached under \(base.lastPathComponent), found \(out.count) root(s) — deeper roots may be missed")
         }
         return out
+        #endif
     }
+
+    #if os(Windows)
+    /// Windows FileManager enumerators can skip a sibling branch after `skipDescendants()`.
+    /// Use explicit recursion so depth limits do not make valid session roots disappear.
+    private static func embeddedClaudeProjectRootsWindows(under base: URL, maxDepth: Int) -> [URL] {
+        let fm = FileManager.default
+        var isDirectory: ObjCBool = false
+        guard fm.fileExists(atPath: base.path, isDirectory: &isDirectory), isDirectory.boolValue else { return [] }
+
+        var roots: [URL] = []
+        var prunedByDepth = false
+
+        func scan(_ directory: URL, relativeDepth: Int) {
+            guard let children = try? fm.contentsOfDirectory(
+                at: directory,
+                includingPropertiesForKeys: [.isDirectoryKey],
+                options: []) else { return }
+
+            for child in children {
+                guard (try? child.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true else { continue }
+                let name = child.lastPathComponent
+                let childDepth = relativeDepth + 1
+                if name == "projects", child.deletingLastPathComponent().lastPathComponent == ".claude" {
+                    roots.append(child)
+                    continue
+                }
+                if childDepth >= maxDepth {
+                    prunedByDepth = true
+                    continue
+                }
+                if rootScanSkippedDirectories.contains(name) { continue }
+                scan(child, relativeDepth: childDepth)
+            }
+        }
+
+        scan(base, relativeDepth: 0)
+        if prunedByDepth {
+            AppLog.write("claude desktop scan: depth \(maxDepth) reached under \(base.lastPathComponent), found \(roots.count) root(s) — deeper roots may be missed")
+        }
+        return roots
+    }
+    #endif
 
     /// 중복·중첩 루트를 제거한다. `CLAUDE_CONFIG_DIR=~/.claude` 처럼 기본 루트와 겹치게 지정하면
     /// 같은 파일을 두 번 스캔한다 — 전역 dedup 이 합계는 바로잡지만 스캔 비용은 그대로 두 배다.
@@ -250,7 +309,7 @@ enum LocalUsageReader {
     static func parseClaudeFile(_ url: URL, fmt: DateFormatter) -> [Entry] {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         var out: [Entry] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        for line in text.split(whereSeparator: \.isNewline) {
             guard line.contains("\"usage\""), line.contains("\"assistant\"") else { continue }
             // 라인마다 autoreleasepool — JSONSerialization 이 만드는 autoreleased NSDictionary/NSString 가
             // 수천 파일·수만 라인에 걸쳐 배출 없이 누적돼 콜드 파싱 피크를 키우던 것을 즉시 배출.
@@ -411,7 +470,7 @@ enum LocalUsageReader {
         // 실모델은 아래 codexModel 이 로그에서 동적 추출(신모델 자동 대응). 이 값은 세션에 model 라인이
         // 아예 없을 때만 쓰는 버전무관 폴백 — Codex 비용은 항상 0이라 표시 숫자엔 영향 없다(업데이트 불필요).
         var model = "codex"
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        for line in text.split(whereSeparator: \.isNewline) {
             autoreleasepool {   // JSONSerialization 의 autoreleased 객체를 라인마다 배출(콜드 파싱 피크 억제)
                 let record = String(line)
                 // NOTE: 여기에 `line.contains("session_meta")` prefilter 를 넣으면 **느려진다**.
@@ -931,7 +990,7 @@ enum LocalUsageReader {
         if url.pathExtension == "jsonl" {
             guard let text = String(data: data, encoding: .utf8) else { return [] }
             var lastTimestamp: Date?
-            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            for line in text.split(whereSeparator: \.isNewline) {
                 autoreleasepool {   // JSONSerialization 의 autoreleased 객체를 라인마다 배출(콜드 파싱 피크 억제)
                     guard line.contains("\"tokens\"") || line.contains("\"timestamp\"") else { return }
                     guard let d = String(line).data(using: .utf8),
@@ -996,7 +1055,7 @@ enum LocalUsageReader {
     static func parseGrokFile(_ url: URL, fmt: DateFormatter) -> [Entry] {
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [] }
         var out: [Entry] = []
-        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+        for line in text.split(whereSeparator: \.isNewline) {
             // updates.jsonl 은 스트리밍 청크까지 전부 라인으로 남는다(세션당 수만 라인) →
             // JSON 파싱 전에 문자열로 걸러낸다.
             guard line.contains("turn_completed") else { continue }

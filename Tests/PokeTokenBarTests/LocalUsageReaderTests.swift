@@ -176,7 +176,7 @@ final class LocalUsageReaderTests: XCTestCase {
             configDirValue: " /a/one , ,~/two ", home: home).map(\.path)
 
         XCTAssertTrue(roots.contains("/a/one/projects"))
-        XCTAssertTrue(roots.contains(NSString(string: "~/two").expandingTildeInPath + "/projects"))
+        XCTAssertTrue(roots.contains(home.appendingPathComponent("two/projects").path))
         XCTAssertFalse(roots.contains { $0 == "/projects" })          // 빈 조각이 루트로 새지 않는다
         XCTAssertTrue(roots.contains("/Users/testhome/.claude/projects"))
         XCTAssertTrue(roots.contains("/Users/testhome/.config/claude/projects"))
@@ -186,12 +186,23 @@ final class LocalUsageReaderTests: XCTestCase {
     }
 
     /// 심볼릭 링크로 같은 트리를 두 번 가리켜도 한 번만 스캔해야 한다(합계는 dedup 이 지키지만 비용은 아니다).
-    func testNormalizedRootsFoldSymlinkedDuplicates() {
+    func testNormalizedRootsFoldSymlinkedDuplicates() throws {
         let base = tempDir()
         let real = base.appendingPathComponent("real/projects")
         try? FileManager.default.createDirectory(at: real, withIntermediateDirectories: true)
         let link = base.appendingPathComponent("linked")
-        try? FileManager.default.createSymbolicLink(at: link, withDestinationURL: base.appendingPathComponent("real"))
+        do {
+            try FileManager.default.createSymbolicLink(
+                at: link,
+                withDestinationURL: base.appendingPathComponent("real")
+            )
+        } catch {
+            #if os(Windows)
+            throw XCTSkip("Windows symbolic-link privilege is unavailable: \(error)")
+            #else
+            throw error
+            #endif
+        }
 
         let folded = LocalUsageReader.normalizedRoots([real, link.appendingPathComponent("projects")])
         XCTAssertEqual(folded.count, 1, "심볼릭 링크로 중복된 루트는 접혀야 한다")

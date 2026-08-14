@@ -7,8 +7,16 @@ final class BinaryLocatorTests: XCTestCase {
         let home = NSHomeDirectory()
         let env = BinaryLocator.augmentedEnvironment(
             binaryPath: "\(home)/.local/share/mise/shims/codex",
-            base: ["PATH": "/usr/bin:/bin", "LANG": "en_US.UTF-8"])
-        let paths = env["PATH"]!.split(separator: ":").map(String.init)
+            base: ["PATH": pathSeparator + "/usr/bin" + pathSeparator + "/bin", "LANG": "en_US.UTF-8"])
+        let paths = env["PATH"]!.split(separator: Character(pathSeparator)).map(String.init)
+        #if os(Windows)
+        let expectedMiseShims = URL(fileURLWithPath: "\(home)/.local/share/mise/shims").path
+        XCTAssertEqual(paths.first, expectedMiseShims)
+        XCTAssertTrue(paths.contains(URL(fileURLWithPath: "\(home)/.local/bin").path))
+        XCTAssertEqual(paths.filter { $0 == expectedMiseShims }.count, 1)
+        XCTAssertEqual(env["LANG"], "en_US.UTF-8")
+        return
+        #endif
 
         XCTAssertEqual(paths.first, "\(home)/.local/share/mise/shims")   // 바이너리 디렉토리 최우선
         XCTAssertTrue(paths.contains("/opt/homebrew/bin"))               // mise 본체 위치 후보
@@ -21,9 +29,17 @@ final class BinaryLocatorTests: XCTestCase {
     func testAugmentedEnvironmentWithoutBasePath() {
         let env = BinaryLocator.augmentedEnvironment(
             binaryPath: "/opt/homebrew/bin/codex", base: [:])
-        let paths = env["PATH"]!.split(separator: ":").map(String.init)
+        let paths = env["PATH"]!.split(separator: Character(pathSeparator)).map(String.init)
         XCTAssertEqual(paths.first, "/opt/homebrew/bin")
         XCTAssertTrue(paths.contains("/usr/bin"))   // 기본 PATH 폴백
+    }
+
+    private var pathSeparator: String {
+        #if os(Windows)
+        return ";"
+        #else
+        return ":"
+        #endif
     }
 
     func testParsesCleanMarkedPath() {

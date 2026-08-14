@@ -1,6 +1,8 @@
 import Foundation
 import Observation
+#if canImport(UserNotifications)
 import UserNotifications
+#endif
 
 /// 게임 상태의 출처. 설치 이후 토큰 사용량으로 포켓몬을 진화시키고, 최종체 + 추가 임계 도달 시
 /// 도감(라인 전체)에 보존 + 새 알. 진화 트리/희귀도/이름은 PokeProviding 으로 런타임 주입.
@@ -792,6 +794,7 @@ final class CompanionStore {
     private func notifyCompanionEvent(_ title: String, _ body: String) {
         guard AppEnv.isBundledApp else { return }
         guard UserDefaults.standard.object(forKey: "companionNotifications") as? Bool ?? true else { return }
+#if canImport(UserNotifications)
         notifSeq += 1
         let content = UNMutableNotificationContent()
         content.title = title
@@ -799,6 +802,11 @@ final class CompanionStore {
         content.sound = .default
         UNUserNotificationCenter.current().add(
             UNNotificationRequest(identifier: "companion-event-\(notifSeq)", content: content, trigger: nil))
+#else
+        // Windows 트레이는 알림 센터 연동을 아직 제공하지 않는다. 도메인 이벤트는
+        // 위 상태/연출 필드에 남기므로 기능 자체를 잃지 않고 플랫폼 UI가 소비한다.
+        AppLog.write("companion event notification unavailable on this platform: \(title)")
+#endif
     }
 
     // MARK: 부화
@@ -871,9 +879,11 @@ final class CompanionStore {
         // 스프라이트 예열 — 부화 직후 보일 것들: base 정적+애니메이션, shiny 롤(1/64) 대비 shiny 애니메이션.
         // .app 번들에서만(단위 테스트가 실네트워크에 닿지 않도록 — 알림과 동일한 게이트).
         if AppEnv.isBundledApp {
+#if os(macOS)
             _ = await SpriteStore.shared.data(speciesID: line.baseID, animated: false, shiny: false)
             _ = await SpriteStore.shared.data(speciesID: line.baseID, animated: true, shiny: false)
             _ = await SpriteStore.shared.data(speciesID: line.baseID, animated: true, shiny: true)
+#endif
         }
         prefetchedLineID = id
     }

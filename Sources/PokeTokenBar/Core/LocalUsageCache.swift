@@ -315,7 +315,11 @@ actor LocalUsageCache {
         loaded = true
         guard let raw = try? Data(contentsOf: fileURL) else { return }
         // zlib 압축 스냅샷(현행) → 실패 시 평문 JSON(구버전 캐시) 폴백
+#if os(Windows)
+        let data = raw
+#else
         let data = (try? (raw as NSData).decompressed(using: .zlib) as Data) ?? raw
+#endif
         guard let snap = try? JSONDecoder().decode(Snapshot.self, from: data) else { return }
         claudeCache = snap.claude
         codexCache = snap.codex
@@ -364,8 +368,12 @@ actor LocalUsageCache {
             grokParserVersion: Self.grokParserVersion)
         if let data = try? JSONEncoder().encode(snap) {
             // JSON 은 zlib 로 크게 압축됨(수 MB → 수백 KB). 실패 시 평문 저장(로드가 양쪽 다 처리).
+#if os(Windows)
+            let out = data
+#else
             let out = (try? (data as NSData).compressed(using: .zlib) as Data) ?? data
-            try? out.write(to: fileURL, options: .atomic)
+#endif
+            try? out.write(to: fileURL, options: Data.WritingOptions.atomic)
             dirty = false
             lastSave = now()
         }

@@ -32,8 +32,8 @@ enum ProcessRunner {
             .appendingPathComponent("poketokenbar-\(UUID().uuidString).jsonl")
         let errURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("poketokenbar-\(UUID().uuidString).stderr")
-        FileManager.default.createFile(atPath: outURL.path, contents: nil)
-        FileManager.default.createFile(atPath: errURL.path, contents: nil)
+        _ = FileManager.default.createFile(atPath: outURL.path, contents: nil)
+        _ = FileManager.default.createFile(atPath: errURL.path, contents: nil)
         defer {
             try? FileManager.default.removeItem(at: outURL)
             try? FileManager.default.removeItem(at: errURL)
@@ -101,7 +101,13 @@ enum ProcessRunner {
             process.terminate()
             DispatchQueue.global().asyncAfter(deadline: .now() + 2) {
                 if process.isRunning {
+#if os(macOS)
                     kill(process.processIdentifier, SIGKILL)
+#else
+                    // Windows Process.terminate() is the supported Foundation
+                    // termination primitive; avoid importing a POSIX signal API.
+                    process.terminate()
+#endif
                 }
             }
             logStderrTail(errURL, binary: binary)
