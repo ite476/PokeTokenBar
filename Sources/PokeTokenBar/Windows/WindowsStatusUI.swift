@@ -26,7 +26,9 @@ struct WindowsUsageSnapshot: Sendable {
 
     var tokenText: String { TokenFormatter.compact(totalTokens) }
     var costText: String { TokenFormatter.cost(totalCost) }
-    var tooltip: String { "PokeTokenBar\n\(tokenText)\n\(costText)" }
+    /// Windows Explorer tooltip은 줄바꿈 렌더링이 셸 버전/접근성 설정에 따라 달라진다.
+    /// 한 줄로도 핵심 정보를 잃지 않게 하며, 상세 값은 left click 정보창에서 제공한다.
+    var tooltip: String { "PokeTokenBar · \(tokenText) · \(costText)" }
 
     /// 정보 메뉴와 클릭 팝업에서 공유하는 상세 텍스트.
     var detailText: String {
@@ -159,65 +161,6 @@ enum WindowsTrayIconFactory {
                     xorPointer.baseAddress)
             }
         }
-    }
-}
-
-/// 상태 표시창의 GDI 렌더링 헬퍼.
-enum WindowsStatusPainter {
-    static let background = COLORREF(0x00211A16)
-    static let border = COLORREF(0x00604A3C)
-    static let accent = COLORREF(0x005B6BFF)
-    static let text = COLORREF(0x00F4F4F4)
-    static let secondaryText = COLORREF(0x00B9B9B9)
-
-    static func paint(window: HWND?, snapshot: WindowsUsageSnapshot) {
-        var paint = PAINTSTRUCT()
-        guard let dc = BeginPaint(window, &paint) else { return }
-        defer { EndPaint(window, &paint) }
-
-        var bounds = RECT()
-        GetClientRect(window, &bounds)
-        let backgroundBrush = CreateSolidBrush(background)
-        FillRect(dc, &bounds, backgroundBrush)
-        DeleteObject(backgroundBrush)
-
-        let borderBrush = CreateSolidBrush(border)
-        FrameRect(dc, &bounds, borderBrush)
-        DeleteObject(borderBrush)
-
-        SetBkMode(dc, Int32(TRANSPARENT))
-        drawBadge(in: dc)
-        drawText(snapshot.tokenText, in: RECT(left: 35, top: 3, right: bounds.right - 6, bottom: 22),
-                 dc: dc, color: text, flags: UINT(DT_LEFT | DT_VCENTER | DT_SINGLELINE))
-        drawText(snapshot.costText, in: RECT(left: 35, top: 21, right: bounds.right - 6, bottom: 41),
-                 dc: dc, color: secondaryText, flags: UINT(DT_LEFT | DT_VCENTER | DT_SINGLELINE))
-    }
-
-    private static func drawText(_ value: String, in rect: RECT, dc: HDC?, color: COLORREF, flags: UINT) {
-        var rect = rect
-        SetTextColor(dc, color)
-        _ = value.withWindowsString { pointer in
-            DrawTextW(dc, pointer, -1, &rect, flags)
-        }
-    }
-
-    /// 작은 status window에서도 텍스트 글꼴/로케일에 영향받지 않는 브랜드 배지.
-    /// 외부 이미지 로더를 사용하지 않고 Win32 GDI 기본 도형만 사용한다.
-    private static func drawBadge(in dc: HDC?) {
-        let pen = CreatePen(Int32(PS_SOLID), 3, accent)
-        let brush = CreateSolidBrush(background)
-        let oldPen = SelectObject(dc, pen)
-        let oldBrush = SelectObject(dc, brush)
-        Ellipse(dc, 8, 8, 30, 36)
-        MoveToEx(dc, 12, 23, nil)
-        LineTo(dc, 15, 20)
-        LineTo(dc, 19, 24)
-        LineTo(dc, 23, 19)
-        LineTo(dc, 27, 23)
-        SelectObject(dc, oldPen)
-        SelectObject(dc, oldBrush)
-        DeleteObject(pen)
-        DeleteObject(brush)
     }
 }
 

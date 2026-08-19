@@ -4,10 +4,9 @@ import WinSDK
 
 /// Windows 전용 트레이 애플리케이션 진입점.
 ///
-/// macOS의 `NSStatusItem`/`NSPopover`를 Windows에서 대응시키기 위해 Win32 메시지
-/// 루프, Shell 알림 아이콘, 작업표시줄에 붙는 작은 status window를 함께 사용한다.
-/// C#이나 별도 런타임 UI 프레임워크가 필요하지 않으며, Core provider는 기존 Swift
-/// 구현을 그대로 재사용한다.
+/// Windows 알림 영역은 macOS 메뉴바처럼 폭이 있는 텍스트를 안정적으로 삽입하는
+/// 확장 지점을 제공하지 않는다. 따라서 항상 떠 있는 별도 창은 만들지 않고, 커스텀
+/// 아이콘·동적 tooltip·클릭 정보창으로 native tray UX를 구성한다.
 @main
 struct WindowsTrayApplication {
     static func main() {
@@ -18,18 +17,16 @@ struct WindowsTrayApplication {
     }
 }
 
-/// 숨김 Win32 윈도우, 트레이 아이콘, 상태 표시창의 수명주기를 관리한다.
+/// 숨김 Win32 윈도우와 알림 영역 아이콘의 수명주기를 관리한다.
 ///
 /// 유지보수 주의점:
-/// - 모든 Win32 콜백은 이 파일의 전역 함수 포인터를 통해 현재 host 하나로 전달한다.
-/// - `statusWindow`는 알림 영역에 텍스트를 삽입할 수 없는 Windows 제약을 보완하는
-///   borderless 상태 표시창이다. Explorer가 아이콘을 overflow 영역으로 옮겨도 값은
-///   계속 보인다.
+/// - 실제 표시 표면은 Explorer가 관리하는 tray icon 하나다. 사용자 설정에 따라
+///   overflow 영역으로 이동할 수 있으며, 앱이 이를 강제로 바꾸지 않는다.
 /// - provider 스캔은 백그라운드 task에서 수행하고, 결과는 `PostMessageW`로 메시지
-///   스레드에 전달한다. UI 객체를 provider task에서 직접 만지지 않는다.
+///   스레드에 전달한다. Win32 callback에서 파일 파싱을 직접 수행하지 않는다.
+/// - left click은 foreground 정보창, right click은 native popup menu로 연결한다.
 final class WindowsTrayHost: @unchecked Sendable {
     fileprivate static let windowClassName = "PokeTokenBar.WindowsTrayHost"
-    fileprivate static let statusWindowClassName = "PokeTokenBar.WindowsStatus"
     fileprivate static let trayCallbackMessage = UINT(WM_APP) + 1
     fileprivate static let snapshotReadyMessage = UINT(WM_APP) + 2
     private static let exitCommand = UINT(0x1001)
@@ -38,7 +35,6 @@ final class WindowsTrayHost: @unchecked Sendable {
     private static let refreshTimerID = UINT_PTR(1)
 
     private var window: HWND?
-    private var statusWindow: HWND?
     private var trayAdded = false
     private var instance: HINSTANCE?
     private var trayIcon: HICON?
@@ -54,18 +50,15 @@ final class WindowsTrayHost: @unchecked Sendable {
         }
 
         trayIcon = WindowsTrayIconFactory.make()
-        let registered = registerWindowClasses(instance: instance)
+        let registered = registerWindowClass(instance: instance)
         let created = registered && createMessageWindow(instance: instance)
-        let statusCreated = created && createStatusWindow(instance: instance)
-        guard registered, created, statusCreated else {
-            AppLog.write("Windows tray startup failed: window registration or creation")
+        guard registered, created else {
+            AppLog.write("Windows tray startup failed: window registration")
             return
         }
 
         activeTrayHost = self
         addTrayIcon()
-        positionStatusWindow()
-        ShowWindow(statusWindow, SW_SHOWNOACTIVATE)
         SetTimer(window, Self.refreshTimerID, UINT(120_000), nil)
         refreshUsage()
 
@@ -75,10 +68,8 @@ final class WindowsTrayHost: @unchecked Sendable {
             removeTrayIcon()
             if let trayIcon { DestroyIcon(trayIcon) }
             activeTrayHost = nil
-            if let statusWindow { DestroyWindow(statusWindow) }
             if let window { DestroyWindow(window) }
             UnregisterClassW(Self.windowClassName.withWindowsString { $0 }, instance)
-            UnregisterClassW(Self.statusWindowClassName.withWindowsString { $0 }, instance)
         }
 
         var message = MSG()
@@ -88,35 +79,21 @@ final class WindowsTrayHost: @unchecked Sendable {
         }
     }
 
-    private func registerWindowClasses(instance: HINSTANCE) -> Bool {
-        var trayClass = WNDCLASSEXW()
-        trayClass.cbSize = UINT(MemoryLayout<WNDCLASSEXW>.size)
-        trayClass.style = UINT(CS_HREDRAW | CS_VREDRAW)
-        trayClass.lpfnWndProc = windowsTrayWindowProcedure
-        trayClass.hInstance = instance
-        trayClass.hIcon = trayIcon ?? LoadIconW(nil, windowsResourcePointer(32512))
-        trayClass.hCursor = LoadCursorW(nil, windowsResourcePointer(32512))
-        trayClass.hbrBackground = GetSysColorBrush(COLOR_WINDOW)
+    private func registerWindowClass(instance: HINSTANCE) -> Bool {
+        var windowClass = WNDCLASSEXW()
+        windowClass.cbSize = UINT(MemoryLayout<WNDCLASSEXW>.size)
+        windowClass.style = UINT(CS_HREDRAW | CS_VREDRAW)
+        windowClass.lpfnWndProc = windowsTrayWindowProcedure
+        windowClass.hInstance = instance
+        windowClass.hIcon = trayIcon ?? LoadIconW(nil, windowsResourcePointer(32512))
+        windowClass.hCursor = LoadCursorW(nil, windowsResourcePointer(32512))
+        windowClass.hbrBackground = GetSysColorBrush(COLOR_WINDOW)
 
-        let trayResult = Self.windowClassName.withWindowsString { name in
-            trayClass.lpszClassName = name
-            return RegisterClassExW(&trayClass)
+        let result = Self.windowClassName.withWindowsString { name in
+            windowClass.lpszClassName = name
+            return RegisterClassExW(&windowClass)
         }
-
-        var statusClass = WNDCLASSEXW()
-        statusClass.cbSize = UINT(MemoryLayout<WNDCLASSEXW>.size)
-        statusClass.style = UINT(CS_HREDRAW | CS_VREDRAW)
-        statusClass.lpfnWndProc = windowsStatusWindowProcedure
-        statusClass.hInstance = instance
-        statusClass.hIcon = trayIcon
-        statusClass.hCursor = LoadCursorW(nil, windowsResourcePointer(32512))
-        statusClass.hbrBackground = nil
-
-        let statusResult = Self.statusWindowClassName.withWindowsString { name in
-            statusClass.lpszClassName = name
-            return RegisterClassExW(&statusClass)
-        }
-        return trayResult != 0 && statusResult != 0
+        return result != 0
     }
 
     private func createMessageWindow(instance: HINSTANCE) -> Bool {
@@ -129,39 +106,6 @@ final class WindowsTrayHost: @unchecked Sendable {
         }
         window = created
         return created != nil
-    }
-
-    private func createStatusWindow(instance: HINSTANCE) -> Bool {
-        let style = DWORD(WS_EX_TOOLWINDOW) | DWORD(WS_EX_NOACTIVATE) | DWORD(WS_EX_TOPMOST)
-        let created = Self.statusWindowClassName.withWindowsString { name in
-            "PokeTokenBar status".withWindowsString { title in
-                CreateWindowExW(
-                    style, name, title, WS_POPUP,
-                    0, 0, 178, 44, nil, nil, instance, nil)
-            }
-        }
-        statusWindow = created
-        return created != nil
-    }
-
-    /// Windows 작업표시줄의 알림 영역에는 넓은 텍스트를 삽입할 수 없으므로, 작업표시줄
-    /// 우측에 작은 상태창을 붙인다. 위치는 고정된 사용자 경로가 아니라 현재 화면의
-    /// 작업 영역 크기로 계산해 DPI/해상도 변경에 대응한다.
-    fileprivate func positionStatusWindow() {
-        guard let statusWindow else { return }
-        let screenWidth = Int(GetSystemMetrics(SM_CXSCREEN))
-        let screenHeight = Int(GetSystemMetrics(SM_CYSCREEN))
-        let width = 178
-        let height = 44
-        let taskbarTop = max(0, screenHeight - 64)
-        let x = max(0, screenWidth - width - 360)
-        // 작업표시줄 위에 완전히 놓아 taskbar 자체가 클릭을 가로채지 않게 한다.
-        let y = max(0, taskbarTop - height - 8)
-        SetWindowPos(
-            statusWindow,
-            nil,
-            Int32(x), Int32(y), Int32(width), Int32(height),
-            UINT(SWP_NOACTIVATE | SWP_SHOWWINDOW))
     }
 
     private func addTrayIcon() {
@@ -200,7 +144,7 @@ final class WindowsTrayHost: @unchecked Sendable {
     }
 
     /// provider 스캔은 메시지 루프를 막지 않는다. 결과가 오면 hidden window에 자체
-    /// 메시지를 넣어 동일한 스레드에서 status window/tooltip을 갱신한다.
+    /// 메시지를 넣어 동일한 스레드에서 tooltip을 갱신한다.
     fileprivate func refreshUsage() {
         refreshTask?.cancel()
         let mailbox = self.mailbox
@@ -217,8 +161,6 @@ final class WindowsTrayHost: @unchecked Sendable {
     fileprivate func applySnapshot() {
         snapshot = mailbox.value
         updateTrayIcon()
-        positionStatusWindow()
-        InvalidateRect(statusWindow, nil, false)
     }
 
     fileprivate func showDetails() {
@@ -270,8 +212,6 @@ final class WindowsTrayHost: @unchecked Sendable {
             break
         }
     }
-
-    fileprivate var currentSnapshot: WindowsUsageSnapshot { snapshot }
 }
 
 private let windowsTrayWindowProcedure: WNDPROC = { window, message, wParam, lParam in
@@ -299,37 +239,9 @@ private let windowsTrayWindowProcedure: WNDPROC = { window, message, wParam, lPa
         if lowWord(wParam) == 1 { activeTrayHost?.refreshUsage() }
         return 0
 
-    case UINT(WM_SETTINGCHANGE), UINT(WM_DISPLAYCHANGE):
-        activeTrayHost?.positionStatusWindow()
-        return 0
-
     case UINT(WM_DESTROY):
         PostQuitMessage(0)
         return 0
-
-    default:
-        return DefWindowProcW(window, message, wParam, lParam)
-    }
-}
-
-private let windowsStatusWindowProcedure: WNDPROC = { window, message, wParam, lParam in
-    switch message {
-    case UINT(WM_PAINT):
-        WindowsStatusPainter.paint(window: window, snapshot: activeTrayHost?.currentSnapshot ?? .empty)
-        return 0
-
-    case UINT(WM_LBUTTONUP):
-        activeTrayHost?.showDetails()
-        return 0
-
-    case UINT(WM_MOUSEACTIVATE):
-        return LRESULT(MA_NOACTIVATE)
-
-    case UINT(WM_NCHITTEST):
-        return LRESULT(HTCLIENT)
-
-    case UINT(WM_ERASEBKGND):
-        return 1
 
     default:
         return DefWindowProcW(window, message, wParam, lParam)
