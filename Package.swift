@@ -26,6 +26,7 @@ let executableSources = [
     "Core/TokenFormatter.swift",
     "Core/UsageProvider.swift",
     "Windows/WindowsSupport.swift",
+    "Windows/WindowsStatusUI.swift",
     "Windows/WindowsTrayApplication.swift",
 ]
 let executableExcludes = [
