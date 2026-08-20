@@ -39,6 +39,7 @@ final class WindowsTrayHost: @unchecked Sendable {
     private var instance: HINSTANCE?
     private var trayIcon: HICON?
     private var snapshot = WindowsUsageSnapshot.empty
+    private let detailsWindow = WindowsDetailsWindow()
     private let mailbox = WindowsUsageMailbox()
     private var refreshTask: Task<Void, Never>?
 
@@ -58,6 +59,7 @@ final class WindowsTrayHost: @unchecked Sendable {
         }
 
         activeTrayHost = self
+        _ = detailsWindow.start(instance: instance)
         addTrayIcon()
         SetTimer(window, Self.refreshTimerID, UINT(120_000), nil)
         refreshUsage()
@@ -67,6 +69,7 @@ final class WindowsTrayHost: @unchecked Sendable {
             _ = KillTimer(window, Self.refreshTimerID)
             removeTrayIcon()
             if let trayIcon { DestroyIcon(trayIcon) }
+            detailsWindow.close()
             activeTrayHost = nil
             if let window { DestroyWindow(window) }
             UnregisterClassW(Self.windowClassName.withWindowsString { $0 }, instance)
@@ -161,23 +164,13 @@ final class WindowsTrayHost: @unchecked Sendable {
     fileprivate func applySnapshot() {
         snapshot = mailbox.value
         updateTrayIcon()
+        detailsWindow.update(snapshot: snapshot)
     }
 
     fileprivate func showDetails() {
-        let title = "PokeTokenBar Windows"
-        let text = snapshot.detailText
-        _ = title.withWindowsString { titlePointer in
-            text.withWindowsString { textPointer in
-                MessageBoxW(
-                    window,
-                    textPointer,
-                    titlePointer,
-                    UINT(MB_OK)
-                        | UINT(MB_ICONINFORMATION)
-                        | UINT(MB_SETFOREGROUND)
-                        | UINT(MB_TOPMOST))
-            }
-        }
+        var cursor = POINT()
+        GetCursorPos(&cursor)
+        detailsWindow.show(snapshot: snapshot, near: cursor)
     }
 
     fileprivate func showMenu(at point: POINT) {

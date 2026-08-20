@@ -12,6 +12,7 @@ struct WindowsProviderUsage: Sendable {
     let displayName: String
     let totalTokens: Int
     let totalCost: Double
+    let reportsCost: Bool
 }
 
 struct WindowsUsageSnapshot: Sendable {
@@ -85,7 +86,8 @@ enum WindowsUsageSnapshotLoader {
                     id: provider.id,
                     displayName: provider.displayName,
                     totalTokens: daily.totalTokens,
-                    totalCost: provider.reportsCost ? daily.totalCost : 0))
+                    totalCost: provider.reportsCost ? daily.totalCost : 0,
+                    reportsCost: provider.reportsCost))
             } catch {
                 errors.append(provider.displayName)
                 AppLog.write("windows status provider failed id=(provider.id) error=\(error)")
