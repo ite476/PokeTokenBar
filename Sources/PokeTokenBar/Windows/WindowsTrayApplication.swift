@@ -5,13 +5,15 @@ import WinSDK
 /// Windows 전용 트레이 애플리케이션 진입점.
 ///
 /// Windows 알림 영역은 macOS 메뉴바처럼 폭이 있는 텍스트를 안정적으로 삽입하는
-/// 확장 지점을 제공하지 않는다. 따라서 항상 떠 있는 별도 창은 만들지 않고, 커스텀
-/// 아이콘·동적 tooltip·클릭 정보창으로 native tray UX를 구성한다.
+/// 확장 지점을 제공하지 않는다. 트레이에는 커스텀 아이콘·동적 tooltip·클릭 정보창을
+/// 사용하고, 별도의 상태 텍스트 패널 대신 드래그 가능한 포켓몬 sprite 펫을 선택적으로
+/// 띄워 macOS companion UX에 대응한다.
 @main
 struct WindowsTrayApplication {
     static func main() {
         // SwiftPM의 Windows 기본 subsystem은 CUI이므로, 트레이 전용 실행에서는 현재
         // 콘솔 연결만 해제한다. 호출 셸의 창을 숨기거나 종료하지는 않는다.
+        _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)
         _ = FreeConsole()
         WindowsTrayHost().run()
     }
@@ -29,10 +31,13 @@ final class WindowsTrayHost: @unchecked Sendable {
     fileprivate static let windowClassName = "PokeTokenBar.WindowsTrayHost"
     fileprivate static let trayCallbackMessage = UINT(WM_APP) + 1
     fileprivate static let snapshotReadyMessage = UINT(WM_APP) + 2
+    fileprivate static let petSnapshotReadyMessage = UINT(WM_APP) + 3
     private static let exitCommand = UINT(0x1001)
     private static let refreshCommand = UINT(0x1002)
     private static let aboutCommand = UINT(0x1003)
+    private static let floatingPetCommand = UINT(0x1004)
     private static let refreshTimerID = UINT_PTR(1)
+    private static let floatingPetEnabledKey = "windowsFloatingPetEnabled"
 
     private var window: HWND?
     private var trayAdded = false
@@ -40,8 +45,11 @@ final class WindowsTrayHost: @unchecked Sendable {
     private var trayIcon: HICON?
     private var snapshot = WindowsUsageSnapshot.empty
     private let detailsWindow = WindowsDetailsWindow()
+    private let floatingPet = WindowsFloatingPetWindow()
     private let mailbox = WindowsUsageMailbox()
+    private let petMailbox = WindowsPetMailbox()
     private var refreshTask: Task<Void, Never>?
+    private var petRefreshTask: Task<Void, Never>?
 
     func run() {
         instance = GetModuleHandleW(nil)
@@ -60,16 +68,23 @@ final class WindowsTrayHost: @unchecked Sendable {
 
         activeTrayHost = self
         _ = detailsWindow.start(instance: instance)
+        floatingPet.onClick = { [weak self] in self?.showDetails() }
+        floatingPet.onRightClick = { [weak self] point in self?.showFloatingMenu(at: point) }
+        _ = floatingPet.start(instance: instance)
+        if floatingPetEnabled { floatingPet.show() }
         addTrayIcon()
         SetTimer(window, Self.refreshTimerID, UINT(120_000), nil)
         refreshUsage()
+        refreshCompanion()
 
         defer {
             refreshTask?.cancel()
+            petRefreshTask?.cancel()
             _ = KillTimer(window, Self.refreshTimerID)
             removeTrayIcon()
             if let trayIcon { DestroyIcon(trayIcon) }
             detailsWindow.close()
+            floatingPet.close()
             activeTrayHost = nil
             if let window { DestroyWindow(window) }
             UnregisterClassW(Self.windowClassName.withWindowsString { $0 }, instance)
@@ -167,10 +182,19 @@ final class WindowsTrayHost: @unchecked Sendable {
         detailsWindow.update(snapshot: snapshot)
     }
 
+    fileprivate func applyPetSnapshot() {
+        guard floatingPetEnabled else { return }
+        floatingPet.update(snapshot: petMailbox.value)
+    }
+
     fileprivate func showDetails() {
         var cursor = POINT()
         GetCursorPos(&cursor)
         detailsWindow.show(snapshot: snapshot, near: cursor)
+    }
+
+    fileprivate func showFloatingMenu(at point: POINT) {
+        showMenu(at: point)
     }
 
     fileprivate func showMenu(at point: POINT) {
@@ -183,6 +207,10 @@ final class WindowsTrayHost: @unchecked Sendable {
         AppendMenuW(menu, UINT(MF_SEPARATOR), 0, nil)
         _ = "정보".withWindowsString { label in
             AppendMenuW(menu, UINT(MF_STRING), UINT_PTR(Self.aboutCommand), label)
+        }
+        let petLabel = floatingPetEnabled ? "펫 숨기기" : "펫 표시"
+        _ = petLabel.withWindowsString { label in
+            AppendMenuW(menu, UINT(MF_STRING), UINT_PTR(Self.floatingPetCommand), label)
         }
         _ = "종료".withWindowsString { label in
             AppendMenuW(menu, UINT(MF_STRING), UINT_PTR(Self.exitCommand), label)
@@ -199,10 +227,44 @@ final class WindowsTrayHost: @unchecked Sendable {
             PostQuitMessage(0)
         case Self.refreshCommand:
             refreshUsage()
+            refreshCompanion()
         case Self.aboutCommand:
             showDetails()
+        case Self.floatingPetCommand:
+            setFloatingPetEnabled(!floatingPetEnabled)
         default:
             break
+        }
+    }
+
+    private var floatingPetEnabled: Bool {
+        get { UserDefaults.standard.object(forKey: Self.floatingPetEnabledKey) as? Bool ?? true }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.floatingPetEnabledKey)
+            if newValue {
+                floatingPet.show()
+                refreshCompanion()
+            } else {
+                floatingPet.hide()
+            }
+        }
+    }
+
+    private func setFloatingPetEnabled(_ enabled: Bool) {
+        floatingPetEnabled = enabled
+    }
+
+    /// CompanionStore와 sprite 데이터는 Win32 UI callback 밖에서 읽는다.
+    fileprivate func refreshCompanion() {
+        petRefreshTask?.cancel()
+        let mailbox = petMailbox
+        let host = self
+        petRefreshTask = Task.detached(priority: .utility) {
+            let result = await WindowsPetSnapshotLoader.load()
+            mailbox.value = result
+            if let window = host.window {
+                PostMessageW(window, WindowsTrayHost.petSnapshotReadyMessage, 0, 0)
+            }
         }
     }
 }
@@ -228,8 +290,15 @@ private let windowsTrayWindowProcedure: WNDPROC = { window, message, wParam, lPa
         activeTrayHost?.applySnapshot()
         return 0
 
+    case WindowsTrayHost.petSnapshotReadyMessage:
+        activeTrayHost?.applyPetSnapshot()
+        return 0
+
     case UINT(WM_TIMER):
-        if lowWord(wParam) == 1 { activeTrayHost?.refreshUsage() }
+        if lowWord(wParam) == 1 {
+            activeTrayHost?.refreshUsage()
+            activeTrayHost?.refreshCompanion()
+        }
         return 0
 
     case UINT(WM_DESTROY):

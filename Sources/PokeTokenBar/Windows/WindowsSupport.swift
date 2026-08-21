@@ -1,5 +1,8 @@
 #if os(Windows)
 import Foundation
+#if canImport(FoundationNetworking)
+import FoundationNetworking
+#endif
 
 typealias OSStatus = Int32
 
@@ -38,9 +41,51 @@ enum SpriteView {
     }
 }
 
-enum SpriteStore {
+/// Windows floating pet가 사용하는 PokeAPI sprite data 저장소.
+///
+/// macOS `SpriteStore`의 URL 규칙과 캐시 키를 유지하되, `NSImage`를 반환하지 않고
+/// 원본 PNG bytes만 반환한다. Windows 렌더러는 이 bytes를 Windows Imaging
+/// Component(WIC)로 `HICON`으로 변환하므로 AppKit/CoreGraphics에 의존하지 않는다.
+actor SpriteStore {
+    static let shared = SpriteStore()
+    private let base = "https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon"
+    private let directory: URL = {
+        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("PokeTokenBar/sprites")
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }()
+
     static func cacheKey(speciesID: Int, animated: Bool, shiny: Bool) -> String {
         "\(speciesID)-\(shiny ? "sh" : "")\(animated ? "a" : "s")"
+    }
+
+    /// 정적 포켓몬/알 스프라이트를 다운로드하고 원자적으로 캐시한다.
+    /// animated 인자는 Windows의 첫 렌더러가 정적 PNG만 지원한다는 사실을 호출부에
+    /// 명확히 하기 위한 호환 인자이며, true 요청도 정적 이미지로 폴백한다.
+    func data(speciesID: Int?, shiny: Bool = false) async -> Data? {
+        let key: String
+        let urlString: String
+        if let speciesID {
+            key = Self.cacheKey(speciesID: speciesID, animated: false, shiny: shiny)
+            urlString = shiny ? "\(base)/shiny/\(speciesID).png" : "\(base)/\(speciesID).png"
+        } else {
+            key = "egg"
+            urlString = "\(base)/egg.png"
+        }
+
+        let file = directory.appendingPathComponent("\(key).png")
+        if let cached = try? Data(contentsOf: file), !cached.isEmpty { return cached }
+        guard let url = URL(string: urlString) else { return nil }
+
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 15
+        guard let (data, response) = try? await URLSession.shared.data(for: request),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              !data.isEmpty else { return nil }
+
+        try? data.write(to: file, options: .atomic)
+        return data
     }
 }
 

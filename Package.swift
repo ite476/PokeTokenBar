@@ -27,7 +27,9 @@ let executableSources = [
     "Core/UsageProvider.swift",
     "Windows/WindowsSupport.swift",
     "Windows/WindowsStatusUI.swift",
+    "Windows/WindowsSpriteDecoder.swift",
     "Windows/WindowsDetailsWindow.swift",
+    "Windows/WindowsFloatingPetWindow.swift",
     "Windows/WindowsTrayApplication.swift",
 ]
 let executableExcludes = [
