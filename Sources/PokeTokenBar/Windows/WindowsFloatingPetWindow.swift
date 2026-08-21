@@ -235,26 +235,37 @@ final class WindowsFloatingPetWindow: @unchecked Sendable {
     }
 
     private func defaultOrigin() -> POINT {
-        let (screenWidth, screenHeight) = logicalScreenSize()
-        return POINT(x: max(12, screenWidth - Self.width - 28), y: max(12, screenHeight - Self.height - 96))
+        let bounds = logicalVirtualBounds()
+        return POINT(
+            x: bounds.right - Self.width - 28,
+            y: bounds.bottom - Self.height - 96)
     }
 
     /// Windows가 non-manifest Swift 실행 파일의 좌표를 system-DPI 논리 단위로
-    /// 가상화할 수 있으므로, screen metrics를 현재 창 DPI에 맞춘 논리 bounds로 바꾼다.
-    /// 이 보정이 없으면 125% 배율에서 기본 x가 화면 밖(물리 x≈1750)으로 밀린다.
-    private func logicalScreenSize() -> (Int32, Int32) {
-        let physicalWidth = Double(GetSystemMetrics(SM_CXSCREEN))
-        let physicalHeight = Double(GetSystemMetrics(SM_CYSCREEN))
+    /// 가상화할 수 있으므로, virtual-screen metrics를 현재 창 DPI에 맞춘 bounds로 바꾼다.
+    /// 이 보정이 없으면 125% 배율에서 기본 x가 화면 밖으로 밀릴 수 있다.
+    private func logicalVirtualBounds() -> (left: Int32, top: Int32, right: Int32, bottom: Int32) {
+        let physicalLeft = Double(GetSystemMetrics(SM_XVIRTUALSCREEN))
+        let physicalTop = Double(GetSystemMetrics(SM_YVIRTUALSCREEN))
+        let physicalWidth = Double(GetSystemMetrics(SM_CXVIRTUALSCREEN))
+        let physicalHeight = Double(GetSystemMetrics(SM_CYVIRTUALSCREEN))
         let dpi = max(96.0, Double(window.map { GetDpiForWindow($0) } ?? 96))
         let scale = dpi / 96.0
-        return (Int32(physicalWidth / scale), Int32(physicalHeight / scale))
+        let left = Int32(physicalLeft / scale)
+        let top = Int32(physicalTop / scale)
+        let width = Int32(physicalWidth / scale)
+        let height = Int32(physicalHeight / scale)
+        return (left, top, left + width, top + height)
     }
 
     private func clampedOrigin(_ origin: POINT) -> POINT {
-        let (screenWidth, screenHeight) = logicalScreenSize()
+        let bounds = logicalVirtualBounds()
+        // 원본 macOS 패널처럼 일부가 화면 밖으로 나갈 수 있게 하되, 다음에 다시
+        // 잡아 끌어올 수 있도록 24px의 손잡이는 항상 가상 데스크톱 안에 남긴다.
+        let visibleHandle: Int32 = 24
         return POINT(
-            x: min(max(12, origin.x), max(12, screenWidth - Self.width - 12)),
-            y: min(max(12, origin.y), max(12, screenHeight - Self.height - 12)))
+            x: min(max(bounds.left - Self.width + visibleHandle, origin.x), bounds.right - visibleHandle),
+            y: min(max(bounds.top - Self.height + visibleHandle, origin.y), bounds.bottom - visibleHandle))
     }
 
     private func saveCurrentOrigin() {
