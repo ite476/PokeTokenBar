@@ -117,9 +117,8 @@ actor LocalUsageCache {
     }
 
     private static let defaultFileURL: URL = {
-        let dir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("PokeTokenBar")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        let dir = AppPaths.applicationDirectory
+        AppPaths.ensureDirectory(dir)
         return dir.appendingPathComponent("usage-cache.json")
     }()
 
